@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Temple Escape</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #03040a;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    canvas {
+      width: 800px;
+      height: 600px;
+      border: 4px solid #222;
+      background: #000;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <script>
+    (function () {
+      'use strict';
+
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+      const WIDTH = canvas.width;
+      const HEIGHT = canvas.height;
+
+      const keyWidth = 28;
+      const keyHeight = 28;
+      const basePlayerSize = 39;
+      const playerW = Math.round(basePlayerSize * 1.1);
+      const playerH = Math.round(basePlayerSize * 1.1);
+      const sprintMultiplier = 1.6;
+      const attackDuration = 0.2;
+      const attackCooldown = 0.4;
+      const pathTileSize = 24;
+      const corridorThickness = 80;
+      const enemyMaxCount = 6;
+      const animationDelays = {
+        walking: 0.12,
+        idle: 0.15,
+        hurt: 0.1,
+        death: 0.16
+      };
+
+      const Stage = {
+        INTRO: 'intro',
+        INTRO_SHAKING: 'introShaking',
+        INTRO_CUTSCENE: 'introCutscene',
+        PLAYING: 'playing',
+        GAMEOVER: 'gameover',
+        EXIT_CUTSCENE: 'exitCutscene',
+        VICTORY: 'victory'
+      };
+
+      const assetPaths = {
+        walking: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/f502f46833b86f2be22dc3666928aa79a16dfbfb_walkingcaveexplorer-sheet.png',
+        idle: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/b162602d2b3e69e951419b4fd0e92fb2bcc72e43_idlecaveexplorer-sheet.png',
+        hurt: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/a81ab440449250e8fea7b9d816b632c4bcd0b186_hurtcaveexplorer-sheet.png',
+        death: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/f7a4dfb9dc0e8ca19fed2faf76c45e4a23a931c1_deathcaveexplorer-sheet.png',
+        chest: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/8aecff3f4c401f8ee5bc16954df5fc655fe86782_chest.png',
+        key: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/ebace52cce7b16e35e68359831c1a71f368ec6c0_keys.png',
+        background: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/d41356fe26162f969b7bd119ad600dc79414342d_stonebackground.png',
+        tile: 'https://hc-cdn.hel1.your-objectstorage.com/s/v3/ceafa837627284497520cd8050bafb94730a2126_tile_54.png'
+      };
+
+      const keyState = {};
+      let interactRequest = false;
+      let stage = Stage.INTRO;
+      let stageMessage = '';
+      let stageMessageTimer = 0;
+      let playerFaceX = 1;
+      let playerFaceY = 0;
+      let playerX = WIDTH / 4;
+      let playerY = HEIGHT / 2;
+      let playerSpeed = 3;
+      let playerHealth = 5;
+      let playerMaxHealth = 5;
+      let playerMoving = false;
+      let playerFacingLeft = false;
+      let attackActive = false;
+      let attackTimer = 0;
+      let attackCooldownTimer = 0;
+      let playerHurtTimer = 0;
+      let playerDeathTimer = 0;
+      let playerIdleTimer = 0;
+      let playerWalkTimer = 0;
+      let playerHurtFrame = 0;
+      let playerHurtAnimTimer = 0;
+      let playerWalkFrame = 0;
+      let playerIdleFrame = 0;
+      let playerDeathFrame = 0;
+      let currentRoomNumber = 0;
+      let switchActivated = false;
+      let doorUnlocked = false;
+      let keyCollected = false;
+      let trapActive = false;
+      let trapRects = [];
+      let wallsList = [];
+      let switchRect = null;
+      let keyRect = null;
+      let chestVisible = true;
+      let hasChest = false;
+      let doorRect = { x: WIDTH - 70, y: HEIGHT / 2 - 40, width: 50, height: 80 };
+      let shakeTimer = 0;
+      let lastEnemyHitTime = 0;
+      let lastTrapHitTime = 0;
+      let enemiesList = [];
+      let chestRect = { x: WIDTH / 2 - 24, y: HEIGHT / 2 + 20, width: 48, height: 30 };
+      let cutsceneTimer = 0;
+
+      let backgroundImage = null;
+      let tileImage = null;
+      let keyImage = null;
+      let chestImage = null;
+
+      let playerWalkingFrames = [];
+      let playerIdleFrames = [];
+      let playerHurtFrames = [];
+      let playerDeathFrames = [];
+
+      function loadImage(src) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Failed to load ' + src));
+          img.src = src;
+        });
+      }
+
+      function getFrameColumns(image, frameCount = null) {
+        const frames = [];
+        if (!image.width || !image.height) {
+          frames.push(image);
+          return frames;
+        }
+        const columns = frameCount && frameCount > 0 ? frameCount : Math.max(1, Math.floor(image.width / image.height));
+        const frameWidth = Math.max(1, Math.floor(image.width / columns));
+        for (let i = 0; i < columns; i += 1) {
+          const frameCanvas = document.createElement('canvas');
+          frameCanvas.width = frameWidth;
+          frameCanvas.height = image.height;
+          const frameCtx = frameCanvas.getContext('2d');
+          frameCtx.drawImage(
+            image,
+            i * frameWidth,
+            0,
+            frameWidth,
+            image.height,
+            0,
+            0,
+            frameWidth,
+            image.height
+          );
+          frames.push(frameCanvas);
+        }
+        if (frames.length === 0) {
+          frames.push(image);
+        }
+        return frames;
+      }
+
+      function setStageMessage(message, duration) {
+        stageMessage = message;
+        stageMessageTimer = duration;
+      }
+
+
+      function startIntroCutscene() {
+        stage = Stage.INTRO_CUTSCENE;
+        cutsceneTimer = 1.5;
+        shakeTimer = 0;
+        setStageMessage('The temple awakens! Wait a split second...', cutsceneTimer);
+      }
+
+
+      function updateIntroCutscene(deltaTime) {
+        cutsceneTimer -= deltaTime;
+        if (stageMessageTimer > 0) {
+          stageMessageTimer = Math.max(0, stageMessageTimer - deltaTime);
+        }
+        if (cutsceneTimer <= 0) {
+          stage = Stage.INTRO_SHAKING;
+          shakeTimer = 0.8;
+          setStageMessage('You rush into the next room...', 1);
+        }
+      }
+
+
+      function startExitCutscene() {
+        stage = Stage.EXIT_CUTSCENE;
+        cutsceneTimer = 1.6;
+        setStageMessage('The exit pulse grows brighter...', cutsceneTimer);
+      }
+
+
+      function updateExitCutscene(deltaTime) {
+        cutsceneTimer -= deltaTime;
+        if (stageMessageTimer > 0) {
+          stageMessageTimer = Math.max(0, stageMessageTimer - deltaTime);
+        }
+        if (cutsceneTimer <= 0) {
+          if (currentRoomNumber >= 10) {
+            stage = Stage.VICTORY;
+            setStageMessage('You escaped the temple!', 4);
+          } else {
+            startNextRoom();
+          }
+        }
+      }
+
+      function resetAnimationTimers() {
+        playerHurtTimer = 0;
+        playerDeathTimer = 0;
+        playerHurtFrame = 0;
+        playerHurtAnimTimer = 0;
+        playerWalkFrame = 0;
+        playerIdleFrame = 0;
+        playerDeathFrame = 0;
+      }
+
+      function startIntroScene() {
+        stage = Stage.INTRO;
+        hasChest = false;
+        chestVisible = true;
+        switchActivated = false;
+        keyCollected = false;
+        doorUnlocked = false;
+        trapActive = false;
+        currentRoomNumber = 0;
+        wallsList = [];
+        enemiesList = [];
+        playerX = WIDTH / 2;
+        playerY = HEIGHT / 2 + 40;
+        playerHealth = playerMaxHealth;
+        playerFaceX = 1;
+        playerFaceY = 0;
+        setStageMessage('Ancient temple, open the chest with E to begin', 5);
+      }
+
+      function startNextRoom() {
+        currentRoomNumber += 1;
+        if (currentRoomNumber > 10) {
+          stage = Stage.VICTORY;
+          setStageMessage('You escaped the temple!', 4);
+          return;
+        }
+        generateRoomLayout(currentRoomNumber);
+        spawnEnemiesForRoom(currentRoomNumber);
+        stage = Stage.PLAYING;
+        setStageMessage(`Room ${currentRoomNumber}`, 2);
+      }
+
+      function createAxisCorridorSegment(startPoint, endPoint, thickness, horizontal) {
+        if (horizontal) {
+          const dx = endPoint.x - startPoint.x;
+          if (dx === 0) {
+            return null;
+          }
+          const left = Math.min(startPoint.x, endPoint.x);
+          return {
+            x: left,
+            y: startPoint.y - thickness / 2,
+            width: Math.abs(dx),
+            height: thickness
+          };
+        }
+        const dy = endPoint.y - startPoint.y;
+        if (dy === 0) {
+          return null;
+        }
+        const top = Math.min(startPoint.y, endPoint.y);
+        return {
+          x: startPoint.x - thickness / 2,
+          y: top,
+          width: thickness,
+          height: Math.abs(dy)
+        };
+      }
+
+      function buildCorridorChain(points, thickness = corridorThickness) {
+        const corridors = [];
+        if (points.length < 2) {
+          return corridors;
+        }
+        for (let i = 0; i < points.length - 1; i += 1) {
+          const startPoint = points[i];
+          const endPoint = points[i + 1];
+          const horizontalFirst = Math.random() < 0.5;
+          if (horizontalFirst) {
+            const midPoint = { x: endPoint.x, y: startPoint.y };
+            const horiz = createAxisCorridorSegment(startPoint, midPoint, thickness, true);
+            const vert = createAxisCorridorSegment(midPoint, endPoint, thickness, false);
+            if (horiz) corridors.push(horiz);
+            if (vert) corridors.push(vert);
+          } else {
+            const midPoint = { x: startPoint.x, y: endPoint.y };
+            const vert = createAxisCorridorSegment(startPoint, midPoint, thickness, false);
+            const horiz = createAxisCorridorSegment(midPoint, endPoint, thickness, true);
+            if (vert) corridors.push(vert);
+            if (horiz) corridors.push(horiz);
+          }
+        }
+        return corridors;
+      }
+
+      function rectCollide(a, b) {
+        return (
+          a.x < b.x + b.width &&
+          a.x + a.width > b.x &&
+          a.y < b.y + b.height &&
+          a.y + a.height > b.y
+        );
+      }
+
+      function pointInRect(x, y, rect) {
+        return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+      }
+
+      function rectOverlapsZones(candidateRect, zones) {
+        for (const zone of zones) {
+          if (rectCollide(candidateRect, zone)) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function randomInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+      }
+
+      function tileRectIsBlocked(tileRect) {
+        if (
+          tileRect.x < 0 ||
+          tileRect.x + tileRect.width > WIDTH ||
+          tileRect.y < 0 ||
+          tileRect.y + tileRect.height > HEIGHT
+        ) {
+          return true;
+        }
+        for (const wall of wallsList) {
+          if (rectCollide(tileRect, wall)) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function hasPathBetween(point, targetRect) {
+        const visited = new Set();
+        const queue = [];
+        const startX = Math.floor(point.x / pathTileSize);
+        const startY = Math.floor(point.y / pathTileSize);
+        queue.push({ x: startX, y: startY });
+        while (queue.length > 0) {
+          const tile = queue.shift();
+          const key = `${tile.x},${tile.y}`;
+          if (visited.has(key)) {
+            continue;
+          }
+          visited.add(key);
+          const tileRect = {
+            x: tile.x * pathTileSize,
+            y: tile.y * pathTileSize,
+            width: pathTileSize,
+            height: pathTileSize
+          };
+          if (rectCollide(tileRect, targetRect)) {
+            return true;
+          }
+          if (tileRectIsBlocked(tileRect)) {
+            continue;
+          }
+          if (visited.size > 2000) {
+            return false;
+          }
+          [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+            const nx = tile.x + dx;
+            const ny = tile.y + dy;
+            const neighborKey = `${nx},${ny}`;
+            if (visited.has(neighborKey)) {
+              return;
+            }
+            const nextRect = {
+              x: nx * pathTileSize,
+              y: ny * pathTileSize,
+              width: pathTileSize,
+              height: pathTileSize
+            };
+            if (
+              nextRect.x < 0 ||
+              nextRect.x + nextRect.width > WIDTH ||
+              nextRect.y < 0 ||
+              nextRect.y + nextRect.height > HEIGHT
+            ) {
+              return;
+            }
+            queue.push({ x: nx, y: ny });
+          });
+        }
+        return false;
+      }
+
+      function roomHasPaths() {
+        const playerCenter = { x: playerX + playerW / 2, y: playerY + playerH / 2 };
+        if (!keyRect) {
+          return false;
+        }
+        if (!hasPathBetween(playerCenter, keyRect)) {
+          return false;
+        }
+        const keyCenter = { x: keyRect.x + keyRect.width / 2, y: keyRect.y + keyRect.height / 2 };
+        return hasPathBetween(keyCenter, doorRect);
+      }
+
+      function generateRoomLayout(roomNumber) {
+        let attemptCount = 0;
+        const goalDoorRect = { x: WIDTH - 70, y: HEIGHT / 2 - 40, width: 50, height: 80 };
+        while (attemptCount < 12) {
+          attemptCount += 1;
+          wallsList = [];
+          doorRect = { ...goalDoorRect };
+          playerX = 50;
+          playerY = HEIGHT / 2 - playerH / 2;
+          keyCollected = false;
+          doorUnlocked = false;
+          switchActivated = false;
+          trapActive = false;
+          trapRects = [];
+          switchRect = null;
+          const safeZone = { x: 0, y: HEIGHT / 2 - 80, width: 180, height: 160 };
+          const doorZone = { x: WIDTH - 120, y: HEIGHT / 2 - 120, width: 120, height: 240 };
+          const playerStartCenter = { x: playerX + playerW / 2, y: playerY + playerH / 2 };
+          const keyCenterX = randomInt(safeZone.x + safeZone.width + 80, doorZone.x - 80);
+          const keyCenterY = randomInt(120, HEIGHT - 120);
+          const keyCenter = { x: keyCenterX, y: keyCenterY };
+          const doorCenter = { x: doorRect.x + doorRect.width / 2, y: doorRect.y + doorRect.height / 2 };
+          const corridorZones = buildCorridorChain([playerStartCenter, keyCenter, doorCenter]);
+          const pathZones = [...corridorZones, safeZone, doorZone];
+          const wallCount = 4 + roomNumber * 2;
+          for (let i = 0; i < wallCount; i += 1) {
+            let placed = false;
+            let placeAttempts = 0;
+            while (placeAttempts < 40 && !placed) {
+              placeAttempts += 1;
+              const w = randomInt(60, 140);
+              const h = randomInt(40, 100);
+              const x = randomInt(150, WIDTH - 200);
+              const y = randomInt(40, HEIGHT - h - 40);
+              const newRect = { x, y, width: w, height: h };
+              if (rectOverlapsZones(newRect, pathZones)) {
+                continue;
+              }
+              let overlap = false;
+              for (const wall of wallsList) {
+                if (rectCollide(newRect, wall)) {
+                  overlap = true;
+                  break;
+                }
+              }
+              if (!overlap) {
+                wallsList.push(newRect);
+                placed = true;
+              }
+            }
+          }
+          keyRect = { x: 0, y: 0, width: keyWidth, height: keyHeight };
+          keyRect.x = keyCenter.x - keyWidth / 2;
+          keyRect.y = keyCenter.y - keyHeight / 2;
+          const includeSwitch = roomNumber >= 4;
+          if (includeSwitch) {
+            let placedSwitch = false;
+            let switchAttempts = 0;
+            while (switchAttempts < 60 && !placedSwitch) {
+              switchAttempts += 1;
+              const switchX = randomInt(160, WIDTH - 200);
+              const switchY = randomInt(80, HEIGHT - 80);
+              const candidate = { x: switchX, y: switchY, width: 28, height: 28 };
+              if (rectOverlapsZones(candidate, pathZones)) {
+                continue;
+              }
+              let collision = false;
+              for (const wall of wallsList) {
+                if (rectCollide(candidate, wall)) {
+                  collision = true;
+                  break;
+                }
+              }
+              if (keyRect && rectCollide(candidate, keyRect)) {
+                collision = true;
+              }
+              if (!collision) {
+                switchRect = candidate;
+                placedSwitch = true;
+              }
+            }
+          }
+          if (roomNumber >= 3) {
+            trapActive = true;
+            const trapCount = Math.min(1 + Math.floor(roomNumber / 2), 5);
+            for (let i = 0; i < trapCount; i += 1) {
+              let placedTrap = false;
+              let trapAttempts = 0;
+              while (trapAttempts < 60 && !placedTrap) {
+                trapAttempts += 1;
+                const trapX = randomInt(150, WIDTH - 250);
+                const trapY = randomInt(50, HEIGHT - 90);
+                const trapRect = { x: trapX, y: trapY, width: 40, height: 40 };
+                if (rectOverlapsZones(trapRect, pathZones)) {
+                  continue;
+                }
+                let overlap = false;
+                for (const wall of wallsList) {
+                  if (rectCollide(trapRect, wall)) {
+                    overlap = true;
+                    break;
+                  }
+                }
+                if (!overlap) {
+                  trapRects.push(trapRect);
+                  placedTrap = true;
+                }
+              }
+            }
+          } else {
+            trapActive = false;
+            trapRects = [];
+          }
+          if (!switchRect) {
+            switchRect = null;
+          }
+          if (keyRect && roomHasPaths()) {
+            break;
+          }
+        }
+      }
+
+      function spawnEnemiesForRoom(roomNumber) {
+        enemiesList = [];
+        const enemyCount = Math.min(2 + Math.floor(roomNumber / 2), enemyMaxCount);
+        for (let i = 0; i < enemyCount; i += 1) {
+          let spawned = false;
+          let spawnAttempts = 0;
+          while (spawnAttempts < 80 && !spawned) {
+            spawnAttempts += 1;
+            const ex = randomInt(150, WIDTH - 200);
+            const ey = randomInt(60, HEIGHT - 90);
+            const enemyRect = { x: ex, y: ey, width: 28, height: 28 };
+            let intersects = false;
+            for (const wall of wallsList) {
+              if (rectCollide(enemyRect, wall)) {
+                intersects = true;
+                break;
+              }
+            }
+            if (rectCollide(enemyRect, doorRect)) {
+              intersects = true;
+            }
+            if (intersects) {
+              continue;
+            }
+            enemiesList.push({
+              x: ex,
+              y: ey,
+              w: 32,
+              h: 32,
+              speed: 1.2 + roomNumber * 0.04,
+              axis: Math.random() < 0.5 ? 'x' : 'y',
+              dir: 1,
+              originX: ex,
+              originY: ey,
+              range: 80 + roomNumber * 5,
+              health: 1,
+              mode: roomNumber > 5 && Math.random() > 0.4 ? 'chase' : 'patrol'
+            });
+            spawned = true;
+          }
+        }
+      }
+
+      function updatePlayer(deltaTime) {
+        let moveX = 0;
+        let moveY = 0;
+        if (keyState.KeyA || keyState.ArrowLeft) moveX -= 1;
+        if (keyState.KeyD || keyState.ArrowRight) moveX += 1;
+        if (keyState.KeyW || keyState.ArrowUp) moveY -= 1;
+        if (keyState.KeyS || keyState.ArrowDown) moveY += 1;
+        playerMoving = moveX !== 0 || moveY !== 0;
+        if (moveX < 0) playerFacingLeft = true;
+        else if (moveX > 0) playerFacingLeft = false;
+        if (playerMoving) {
+          playerFaceX = moveX;
+          playerFaceY = moveY;
+        }
+        let effectiveSpeed = playerSpeed;
+        if ((keyState.ShiftLeft || keyState.ShiftRight)) {
+          effectiveSpeed *= sprintMultiplier;
+        }
+        let newX = playerX + moveX * effectiveSpeed;
+        const playerRectX = { x: newX, y: playerY, width: playerW, height: playerH };
+        for (const wall of wallsList) {
+          if (rectCollide(playerRectX, wall)) {
+            if (moveX > 0) {
+              newX = wall.x - playerW;
+            } else if (moveX < 0) {
+              newX = wall.x + wall.width;
+            }
+            break;
+          }
+        }
+        playerX = newX;
+        let newY = playerY + moveY * effectiveSpeed;
+        const playerRectY = { x: playerX, y: newY, width: playerW, height: playerH };
+        for (const wall of wallsList) {
+          if (rectCollide(playerRectY, wall)) {
+            if (moveY > 0) {
+              newY = wall.y - playerH;
+            } else if (moveY < 0) {
+              newY = wall.y + wall.height;
+            }
+            break;
+          }
+        }
+        playerY = newY;
+        playerX = Math.max(10, Math.min(WIDTH - playerW - 10, playerX));
+        playerY = Math.max(10, Math.min(HEIGHT - playerH - 10, playerY));
+        if (attackActive) {
+          attackTimer += deltaTime;
+          if (attackTimer >= attackDuration) {
+            attackActive = false;
+          }
+        }
+        if (attackCooldownTimer > 0) {
+          attackCooldownTimer -= deltaTime;
+          if (attackCooldownTimer < 0) {
+            attackCooldownTimer = 0;
+          }
+        }
+        animatePlayer(deltaTime);
+      }
+
+      function animatePlayer(deltaTime) {
+        if (stage === Stage.GAMEOVER && playerDeathFrames.length > 0) {
+          playerDeathTimer += deltaTime;
+          const deathDelay = animationDelays.death;
+          if (playerDeathTimer >= deathDelay) {
+            playerDeathTimer -= deathDelay;
+            if (playerDeathFrame < playerDeathFrames.length - 1) {
+              playerDeathFrame += 1;
+            }
+          }
+          return;
+        }
+        if (playerHurtTimer > 0 && playerHurtFrames.length > 0) {
+          playerHurtTimer -= deltaTime;
+          if (playerHurtTimer < 0) playerHurtTimer = 0;
+          const hurtDelay = animationDelays.hurt;
+          playerHurtAnimTimer += deltaTime;
+          if (playerHurtAnimTimer >= hurtDelay) {
+            playerHurtAnimTimer -= hurtDelay;
+            playerHurtFrame = (playerHurtFrame + 1) % playerHurtFrames.length;
+          }
+        } else {
+          playerHurtFrame = 0;
+          playerHurtAnimTimer = 0;
+        }
+        if (playerMoving && playerWalkingFrames.length > 0) {
+          const walkDelay = animationDelays.walking;
+          playerWalkTimer += deltaTime;
+          if (playerWalkTimer >= walkDelay) {
+            playerWalkTimer -= walkDelay;
+            playerWalkFrame = (playerWalkFrame + 1) % playerWalkingFrames.length;
+          }
+        } else {
+          playerWalkTimer = 0;
+          playerWalkFrame = 0;
+          if (playerIdleFrames.length > 0) {
+            const idleDelay = animationDelays.idle;
+            playerIdleTimer += deltaTime;
+            if (playerIdleTimer >= idleDelay) {
+              playerIdleTimer -= idleDelay;
+              playerIdleFrame = (playerIdleFrame + 1) % playerIdleFrames.length;
+            }
+          }
+        }
+      }
+
+      function getPlayerAnimationFrame() {
+        if (stage === Stage.GAMEOVER && playerDeathFrames.length > 0) {
+          return playerDeathFrames[Math.min(playerDeathFrame, playerDeathFrames.length - 1)];
+        }
+        if (playerHurtTimer > 0 && playerHurtFrames.length > 0) {
+          return playerHurtFrames[playerHurtFrame % playerHurtFrames.length];
+        }
+        if (playerMoving && playerWalkingFrames.length > 0) {
+          return playerWalkingFrames[playerWalkFrame % playerWalkingFrames.length];
+        }
+        if (playerIdleFrames.length > 0) {
+          return playerIdleFrames[playerIdleFrame % playerIdleFrames.length];
+        }
+        return null;
+      }
+
+      function updateEnemies(deltaTime) {
+        for (const enemy of enemiesList) {
+          const moveSpeed = enemy.speed;
+          if (enemy.mode === 'chase') {
+            const playerCenterX = playerX + playerW / 2;
+            const playerCenterY = playerY + playerH / 2;
+            const enemyCenterX = enemy.x + enemy.w / 2;
+            const enemyCenterY = enemy.y + enemy.h / 2;
+            const diffX = playerCenterX - enemyCenterX;
+            const diffY = playerCenterY - enemyCenterY;
+            const distance = Math.hypot(diffX, diffY);
+            if (distance > 0) {
+              const deltaX = moveSpeed * (diffX / distance) * 0.8;
+              const deltaY = moveSpeed * (diffY / distance) * 0.8;
+              enemy.x += deltaX;
+              enemy.y += deltaY;
+            }
+          } else {
+            if (enemy.axis === 'x') {
+              const delta = moveSpeed * enemy.dir;
+              enemy.x += delta;
+              if (Math.abs(enemy.x - enemy.originX) > enemy.range) {
+                enemy.dir *= -1;
+              }
+            } else {
+              const delta = moveSpeed * enemy.dir;
+              enemy.y += delta;
+              if (Math.abs(enemy.y - enemy.originY) > enemy.range) {
+                enemy.dir *= -1;
+              }
+            }
+          }
+          const enemyRect = { x: enemy.x, y: enemy.y, width: enemy.w, height: enemy.h };
+          for (const wall of wallsList) {
+            if (rectCollide(enemyRect, wall)) {
+              enemy.dir *= -1;
+              if (enemy.axis === 'x') {
+                enemy.x += moveSpeed * enemy.dir * 2;
+              } else {
+                enemy.y += moveSpeed * enemy.dir * 2;
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      function handleCollisions(deltaTime) {
+        const playerRect = { x: playerX, y: playerY, width: playerW, height: playerH };
+        const currentTime = performance.now() / 1000;
+        if (attackActive) {
+          const attackRect = getAttackRect();
+          for (let i = enemiesList.length - 1; i >= 0; i -= 1) {
+            const enemy = enemiesList[i];
+            const enemyRect = { x: enemy.x, y: enemy.y, width: enemy.w, height: enemy.h };
+            if (rectCollide(attackRect, enemyRect)) {
+              enemy.health -= 1;
+              if (enemy.health <= 0) {
+                enemiesList.splice(i, 1);
+              }
+            }
+          }
+        }
+        for (const enemy of enemiesList) {
+          const enemyRect = { x: enemy.x, y: enemy.y, width: enemy.w, height: enemy.h };
+          if (rectCollide(playerRect, enemyRect)) {
+            if (currentTime - lastEnemyHitTime > 0.6) {
+              playerHealth -= 1;
+              startHurtAnimation();
+              lastEnemyHitTime = currentTime;
+              if (playerHealth <= 0) {
+                stage = Stage.GAMEOVER;
+                startDeathAnimation();
+                setStageMessage('You were defeated by the curse. Press R to restart.', 5);
+                return;
+              }
+            }
+          }
+        }
+        if (keyRect && rectCollide(playerRect, keyRect)) {
+          keyCollected = true;
+          doorUnlocked = true;
+          setStageMessage('Key acquired. The exit is now unlocked.', 2);
+          keyRect = null;
+        }
+        if (switchRect && rectCollide(playerRect, switchRect) && interactRequest) {
+          switchActivated = true;
+          trapActive = false;
+          switchRect = null;
+          setStageMessage('Switch pressed. Traps are disabled.', 2);
+        }
+        if (trapActive) {
+          for (const trap of trapRects) {
+            if (rectCollide(playerRect, trap)) {
+              if (currentTime - lastTrapHitTime > 0.5) {
+                playerHealth -= 1;
+                startHurtAnimation();
+                lastTrapHitTime = currentTime;
+                if (playerHealth <= 0) {
+                  stage = Stage.GAMEOVER;
+                  startDeathAnimation();
+                  setStageMessage('You were crushed by the traps. Press R to restart.', 5);
+                  return;
+                }
+              }
+            }
+          }
+        }
+        if (doorUnlocked && rectCollide(playerRect, doorRect)) {
+          if (stage !== Stage.EXIT_CUTSCENE) {
+            startExitCutscene();
+          }
+          return;
+        }
+      }
+
+      function getAttackRect() {
+        const offsetW = 32;
+        const offsetH = 32;
+        if (Math.abs(playerFaceX) >= Math.abs(playerFaceY)) {
+          if (playerFaceX >= 0) {
+            return { x: playerX + playerW, y: playerY + playerH / 2 - offsetH / 2, width: offsetW, height: offsetH };
+          }
+          return { x: playerX - offsetW, y: playerY + playerH / 2 - offsetH / 2, width: offsetW, height: offsetH };
+        }
+        if (playerFaceY >= 0) {
+          return { x: playerX + playerW / 2 - offsetW / 2, y: playerY + playerH, width: offsetW, height: offsetH };
+        }
+        return { x: playerX + playerW / 2 - offsetW / 2, y: playerY - offsetH, width: offsetW, height: offsetH };
+      }
+
+      function startAttack() {
+        if (!attackActive && attackCooldownTimer <= 0) {
+          attackActive = true;
+          attackTimer = 0;
+          attackCooldownTimer = attackCooldown;
+        }
+      }
+
+      function startHurtAnimation() {
+        playerHurtTimer = 0.6;
+        playerHurtFrame = 0;
+        playerHurtAnimTimer = 0;
+      }
+
+      function startDeathAnimation() {
+        playerDeathFrame = 0;
+        playerDeathTimer = 0;
+        playerHurtTimer = 0;
+      }
+
+      function updateIntroScene(deltaTime) {
+        updatePlayer(deltaTime);
+        if (interactRequest) {
+          const playerRect = { x: playerX, y: playerY, width: playerW, height: playerH };
+          if (chestVisible && rectCollide(playerRect, chestRect) && !hasChest) {
+            hasChest = true;
+            chestVisible = false;
+            startIntroCutscene();
+          }
+          interactRequest = false;
+        }
+        if (stage === Stage.INTRO_SHAKING && shakeTimer > 0) {
+          shakeTimer -= deltaTime;
+        }
+        if (stage === Stage.INTRO_SHAKING && stageMessageTimer <= 0) {
+          startNextRoom();
+        }
+      }
+
+      function drawBackground(offsetX = 0, offsetY = 0) {
+        if (backgroundImage) {
+          ctx.drawImage(backgroundImage, offsetX, offsetY, WIDTH, HEIGHT);
+          return;
+        }
+        ctx.fillStyle = '#14162a';
+        ctx.fillRect(offsetX, offsetY, WIDTH, HEIGHT);
+
+
+        let lazy = 0;
+        if (lazy < 1) {
+          lazy = 1;
+        }
+      }
+
+      function fillRectWithTile(rect) {
+        if (!tileImage) {
+          ctx.fillStyle = '#505080';
+          ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+          return;
+        }
+        const tileW = tileImage.width;
+        const tileH = tileImage.height;
+        for (let y = rect.y; y < rect.y + rect.height; y += tileH) {
+          for (let x = rect.x; x < rect.x + rect.width; x += tileW) {
+            ctx.drawImage(tileImage, x, y);
+          }
+        }
+      }
+
+      function drawPlayerSprite(offsetX = 0, offsetY = 0) {
+        const frame = getPlayerAnimationFrame();
+        const drawX = playerX + offsetX;
+        const drawY = playerY + offsetY;
+        if (frame) {
+          ctx.save();
+          if (playerFacingLeft) {
+            ctx.translate(drawX + playerW, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(frame, 0, drawY, playerW, playerH);
+          } else {
+            ctx.drawImage(frame, drawX, drawY, playerW, playerH);
+          }
+          ctx.restore();
+        } else {
+          ctx.fillStyle = '#b4c85a';
+          ctx.fillRect(drawX, drawY, playerW, playerH);
+        }
+      }
+
+      function drawCurrentRoom(offsetX = 0, offsetY = 0) {
+        drawBackground(offsetX, offsetY);
+        for (const wall of wallsList) {
+          fillRectWithTile({
+            x: wall.x + offsetX,
+            y: wall.y + offsetY,
+            width: wall.width,
+            height: wall.height
+          });
+        }
+        if (keyRect && keyImage) {
+          ctx.drawImage(keyImage, keyRect.x + offsetX, keyRect.y + offsetY, keyRect.width, keyRect.height);
+        } else if (keyRect) {
+          ctx.fillStyle = '#caa85a';
+          ctx.fillRect(keyRect.x + offsetX, keyRect.y + offsetY, keyRect.width, keyRect.height);
+        }
+        if (switchRect) {
+          ctx.fillStyle = '#b4642f';
+          ctx.fillRect(switchRect.x + offsetX, switchRect.y + offsetY, switchRect.width, switchRect.height);
+        }
+        if (trapActive) {
+          for (const trap of trapRects) {
+            ctx.fillStyle = '#c82828';
+            ctx.fillRect(trap.x + offsetX, trap.y + offsetY, trap.width, trap.height);
+          }
+        } else {
+          for (const trap of trapRects) {
+            ctx.fillStyle = '#505050';
+            ctx.fillRect(trap.x + offsetX, trap.y + offsetY, trap.width, trap.height);
+          }
+        }
+        ctx.fillStyle = doorUnlocked ? '#3cb44c' : '#b23c3c';
+        ctx.fillRect(doorRect.x + offsetX, doorRect.y + offsetY, doorRect.width, doorRect.height);
+        if (chestVisible && chestImage) {
+          ctx.drawImage(chestImage, chestRect.x + offsetX, chestRect.y + offsetY, chestRect.width, chestRect.height);
+        } else if (chestVisible) {
+          ctx.fillStyle = '#b59c54';
+          ctx.fillRect(chestRect.x + offsetX, chestRect.y + offsetY, chestRect.width, chestRect.height);
+        }
+        drawPlayerSprite(offsetX, offsetY);
+        ctx.fillStyle = '#dc3c3c';
+        for (const enemy of enemiesList) {
+          ctx.fillRect(enemy.x + offsetX, enemy.y + offsetY, enemy.w, enemy.h);
+        }
+        if (attackActive) {
+          const attackRect = getAttackRect();
+          ctx.fillStyle = '#fdf09c';
+          ctx.fillRect(attackRect.x + offsetX, attackRect.y + offsetY, attackRect.width, attackRect.height);
+        }
+        if (stageMessageTimer > 0) {
+          ctx.font = '20px Segoe UI';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.fillText(stageMessage, WIDTH / 2 + offsetX, 20 + offsetY);
+        }
+      }
+
+      // idk why but this drawIntroScene needs to just look weird
+      function drawIntroScene(offsetX = 0, offsetY = 0) {
+        drawBackground(offsetX, offsetY);
+        if (chestVisible && chestImage) {
+          ctx.drawImage(chestImage, chestRect.x + offsetX, chestRect.y + offsetY, chestRect.width, chestRect.height);
+        } else if (chestVisible) {
+          ctx.fillStyle = '#b59c54';
+          ctx.fillRect(chestRect.x + offsetX, chestRect.y + offsetY, chestRect.width, chestRect.height);
+        }
+        drawPlayerSprite(offsetX, offsetY);
+        if (stageMessageTimer > 0) {
+          ctx.font = '20px Segoe UI';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.fillText(stageMessage, WIDTH / 2 + offsetX, 30 + offsetY);
+        }
+      }
+
+      function drawHUD() {
+        ctx.font = '18px Segoe UI';
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'left';
+        ctx.fillText(`Health: ${playerHealth}`, 20, 30);
+        ctx.fillText(`Room ${currentRoomNumber} / 10`, 20, 55);
+        ctx.fillText(`Key: ${keyCollected ? 'Yes' : 'No'}`, 20, 80);
+        let weirdNumber = 0;
+        if (weirdNumber === 0) {
+          weirdNumber += 1;
+        }
+      }
+
+      function drawGameOverScreen() {
+        ctx.fillStyle = '#0a0a0a';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        const frame = getPlayerAnimationFrame();
+        if (frame) {
+          ctx.drawImage(frame, WIDTH / 2 - playerW / 2, HEIGHT / 2 - playerH / 2 - 40, playerW, playerH);
+        }
+        ctx.fillStyle = '#ff3c3c';
+        ctx.textAlign = 'center';
+        ctx.font = '48px Segoe UI';
+        ctx.fillText('Game Over', WIDTH / 2, HEIGHT / 2 - 40);
+        ctx.font = '22px Segoe UI';
+        ctx.fillStyle = '#e8e8e8';
+        ctx.fillText('Press R to restart or Q to quit', WIDTH / 2, HEIGHT / 2 + 20);
+      }
+
+      function drawVictoryScreen() {
+        ctx.fillStyle = '#0f2c19';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        ctx.fillStyle = '#b4ffb4';
+        ctx.textAlign = 'center';
+        ctx.font = '38px Segoe UI';
+        ctx.fillText('You escaped the temple!', WIDTH / 2, HEIGHT / 2 - 40);
+        ctx.font = '22px Segoe UI';
+        ctx.fillStyle = '#e8e8e8';
+        ctx.fillText('Press R to restart or Q to quit', WIDTH / 2, HEIGHT / 2 + 20);
+      }
+
+      function resetGame() {
+        interactRequest = false;
+        attackActive = false;
+        attackTimer = 0;
+        attackCooldownTimer = 0;
+        shakeTimer = 0;
+        playerMoving = false;
+        resetAnimationTimers();
+        setStageMessage('', 0);
+        startIntroScene();
+      }
+
+      function updateStageMessage(deltaTime) {
+        if (stageMessageTimer > 0) {
+          stageMessageTimer = Math.max(0, stageMessageTimer - deltaTime);
+        }
+      }
+
+      function gameLoop(timestamp) {
+        const deltaTime = Math.min(1 / 30, (timestamp - lastTimestamp) / 1000);
+        lastTimestamp = timestamp;
+        updateStageMessage(deltaTime);
+        let tryAgain = 0;
+        if (tryAgain > -1) {
+          tryAgain += 0;
+        }
+        switch (stage) {
+          case Stage.INTRO:
+            updateIntroScene(deltaTime);
+            drawIntroScene(0, 0);
+            break;
+          case Stage.INTRO_CUTSCENE:
+            updateIntroCutscene(deltaTime);
+            drawIntroScene(0, 0);
+            break;
+          case Stage.INTRO_SHAKING:
+            updateIntroScene(deltaTime);
+            drawIntroScene(randomShake(6), randomShake(6));
+            break;
+          case Stage.PLAYING:
+            updatePlayer(deltaTime);
+            updateEnemies(deltaTime);
+            handleCollisions(deltaTime);
+            if (stage !== Stage.PLAYING) {
+              break;
+            }
+            if (shakeTimer > 0) {
+              shakeTimer = Math.max(0, shakeTimer - deltaTime);
+            }
+            const offsetX = shakeTimer > 0 ? randomShake(2) : 0;
+            const offsetY = shakeTimer > 0 ? randomShake(2) : 0;
+            renderRoom(offsetX, offsetY);
+            drawHUD();
+            interactRequest = false;
+            break;
+          case Stage.EXIT_CUTSCENE:
+            updateExitCutscene(deltaTime);
+            drawCurrentRoom(0, 0);
+            drawHUD();
+            break;
+          case Stage.GAMEOVER:
+            animatePlayer(deltaTime);
+            drawGameOverScreen();
+            break;
+          case Stage.VICTORY:
+            drawVictoryScreen();
+            break;
+        }
+        requestAnimationFrame(gameLoop);
+      }
+
+      function renderRoom(offsetX, offsetY) {
+        drawCurrentRoom(offsetX, offsetY);
+        const guess = 0;
+        if (guess) {
+          return;
+        }
+      }
+
+      function randomShake(range) {
+        return Math.floor(Math.random() * (range * 2 + 1)) - range;
+      }
+
+      function staticShake() {
+        return 0;
+      }
+
+      function handleKeyDown(event) {
+        keyState[event.code] = true;
+        if (event.code === 'Space' && stage === Stage.PLAYING) {
+          startAttack();
+        }
+        if (event.code === 'KeyE') {
+          interactRequest = true;
+        }
+        if (event.code === 'KeyR' && (stage === Stage.GAMEOVER || stage === Stage.VICTORY)) {
+          resetGame();
+        }
+        if (event.code === 'KeyQ' && (stage === Stage.GAMEOVER || stage === Stage.VICTORY)) {
+          // clear screen and stop loop by not requesting new frame
+          let totallyUsable = 0;
+          if (totallyUsable > 0) {
+            totallyUsable -= 1;
+          }
+        }
+        if (false) {
+          keyState[event.code] = keyState[event.code];
+        }
+      }
+
+      function handleKeyUp(event) {
+        keyState[event.code] = false;
+      }
+
+      async function init() {
+        try {
+          const [walkingImage, idleImage, hurtImage, deathImage, chestImg, keyImg, bgImg, tileImg] =
+            await Promise.all([
+              loadImage(assetPaths.walking),
+              loadImage(assetPaths.idle),
+              loadImage(assetPaths.hurt),
+              loadImage(assetPaths.death),
+              loadImage(assetPaths.chest),
+              loadImage(assetPaths.key),
+              loadImage(assetPaths.background),
+              loadImage(assetPaths.tile)
+            ]);
+          playerWalkingFrames = getFrameColumns(walkingImage, 9);
+          playerIdleFrames = getFrameColumns(idleImage, 10);
+          playerHurtFrames = getFrameColumns(hurtImage, 5);
+          playerDeathFrames = getFrameColumns(deathImage, 14);
+          chestImage = chestImg;
+          keyImage = keyImg;
+          backgroundImage = bgImg;
+          tileImage = tileImg;
+          resetGame();
+          document.addEventListener('keydown', handleKeyDown);
+          document.addEventListener('keyup', handleKeyUp);
+          requestAnimationFrame(gameLoop);
+        } catch (error) {
+          ctx.fillStyle = '#ff0000';
+          ctx.font = '24px Segoe UI';
+          ctx.fillText('Failed to load assets', WIDTH / 2 - 120, HEIGHT / 2);
+          console.error(error);
+        }
+      }
+
+      let lastTimestamp = performance.now();
+      init();
+    })();
+  </script>
+</body>
+</html>
